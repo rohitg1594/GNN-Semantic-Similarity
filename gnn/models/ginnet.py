@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GINConv
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter_max, scatter_add
 
-from fairseq.gnn.models.mlp import MLP
+from gnn.models.mlp import MLP
 
 
 class GINNet(torch.nn.Module):
@@ -66,7 +66,10 @@ class GINNet(torch.nn.Module):
 
         if self.aggr == 'mean':
             score_over_layer = scatter_mean(score_over_layer, data.batch, dim=0)
-        # TODO: Implement sum and max pool
+        if self.aggr == 'max':
+            score_over_layer, _ = scatter_mean(score_over_layer, data.batch, dim=0)
+        if self.aggr == 'sum':
+            score_over_layer = scatter_mean(score_over_layer, data.batch, dim=0)
 
         return score_over_layer
 

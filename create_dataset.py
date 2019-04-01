@@ -3,26 +3,34 @@ import networkx as nx
 from os.path import join
 from collections import Counter
 import pickle
-# import sys
-# sys.path.append("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/")
+import argparse
+import sys
 
 import torch
 
+import numpy as np
+
 from gnn.oov_dictionary import OOVDictionary
 from gnn.utils import create_graph, rand_exclude
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_sents", type=int, default=10 ** 6)
+parser.add_argument("--train_prop", type=float, default=0.9)
+args = parser.parse_args()
 
 
 vocab_sizes = [500, 50000]
 underscore = "▁"
 data_dir = "data"
 langs = ['en', 'de']
-NUM_SENTS = 10 ** 5
+NUM_SENTS = 10 ** 6
 NUM_NEGATIVE = 1
+WORD_THRESHOLD = 25000
 
 print("reading vocab dictionaries")
 dicts = {}
 for v in vocab_sizes:
-    with open(join(data_dir, f"data/local/train_files/iwslt14-en-de-{v}-no-max-filter-dict.en")) as f:
+    with open(join(data_dir, f"vocabs/iwslt14-en-de-{v}-vocab.txt")) as f:
         dicts[v] = dict([line.strip().split() for line in f])
 
 print("creating shared Vocab Dictionary")
@@ -38,7 +46,7 @@ words = {}
 for lang in langs:
     sents[lang] = {}
     for v in vocab_sizes:
-        with open(join(fairseq_dir, f"data/local/train_files/iwslt14-en-de-{v}-no-max-filter-train.{lang}")) as f:
+        with open(join(data_dir, f"corpora/iwslt14-en-de-{v}-train.{lang}")) as f:
             sents[lang][v] = [line.strip().split() for line in f]
     words[lang] = [''.join(pieces).replace(underscore, ' ')[1:].split() for pieces in sents[lang][vocab_sizes[0]]]
 
@@ -48,12 +56,16 @@ print("adding words to shared vocab")
 word_counters = {lang: Counter([word for sent in words[lang] for word in sent]) for lang in langs}
 word_counts = {lang: [count for word, count in counter.most_common()] for lang, counter in word_counters.items()}
 for lang, counter in word_counters.items():
-    for word, _ in counter.most_common(25000):
+    for word, _ in counter.most_common(WORD_THRESHOLD):
         key = f"word|{word}"
         shared_vocab[key] = len(shared_vocab)
 
+print("saving word counters")
+with open(join(data_dir, "vocabs/word_counters.pkl"), "wb") as f:
+    pickle.dump(word_counters, f)
+
 print("saving vocab to disk")
-with open("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/data/local/semantic_similarity_vocab.pickle", "wb") as f:
+with open(join(data_dir, "vocabs/bpe-500-50000-word-thresh-25000-vocab.pkl"), "wb") as f:
     pickle.dump(shared_vocab, f)
 
 print("creating master dictionary of corpus")
@@ -64,7 +76,7 @@ for lang in langs:
         tokens[lang][v] = []
         sent_tokens = []
         for i, sent in enumerate(sents[lang][v]):
-            if i % 10**3 == 0:
+            if i % 10 ** 4 == 0:
                 print(lang, v, i)
             buff = [sent[0]]
             for word in sent[1:]:
@@ -76,6 +88,10 @@ for lang in langs:
             sent_tokens.append(buff)  # last buffer
             tokens[lang][v].append(sent_tokens)
             sent_tokens = []
+
+print("saving tokens dataset")
+with open(join(data_dir, "processed/tokens_dataset.pkl"), "wb") as f:
+    pickle.dump(tokens, f)
 
 # Check different vocab sizes have same sentence length
 for lang in langs:
@@ -92,7 +108,7 @@ for lang in langs:
     graph_ids[lang] = []
     graph_edges[lang] = []
     for i in range(corpus_size):
-        if i % 10 ** 3 == 0:
+        if i % 10 ** 4 == 0:
             print(lang, i)
         g = create_graph(words[lang][i], vocab_dict, {vocab: tokens[lang][vocab][i] for vocab in vocab_sizes})
         int_g = nx.convert_node_labels_to_integers(g)
@@ -118,5 +134,24 @@ dataset = dataset + [{'x_ids_en': graph_ids['en'][i],
                       'edge_index_de': graph_edges['de'][j],
                       'y': 0} for i in range(corpus_size) for j in rand_exclude(0, corpus_size - 1, NUM_NEGATIVE, [i])]
 
-with open("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/data/local/semantic_similarity.pickle", "wb") as f:
-    pickle.dump(dataset, f)
+
+np.random.seed = 42
+permute = np.random.permutation(len(dataset)).tolist()
+
+train = []
+dev = []
+test = []
+train_size = int(args.train_prop * len(dataset))
+dev_size = test_size = (len(dataset) - train_size) // 2
+
+for i in permute:
+    if len(train) < train_size:
+        train.append(dataset[i])
+    elif len(dev) < dev_size:
+        dev.append(dataset[i])
+    else:
+        test.append(dataset[i])
+
+print(f"saving graphs dataset, train: {len(train)}, dev: {len(dev)}, test: {len(test)}")
+with open(join(data_dir, "processed/graphs_dataset.pkl"), "wb") as f:
+    pickle.dump({'train': train, 'dev': dev, 'test': test}, f)

@@ -1,20 +1,27 @@
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GCNConv
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter_max, scatter_add
 
 
 class GCNNet(torch.nn.Module):
-    def __init__(self, aggr='mean', num_embs=None, hidden_size=256, emb_size=128, out_size=128, num_layers=2, dropout=0.5):
+    def __init__(self,
+                 aggr='mean',
+                 num_embs=None,
+                 hidden_size=256,
+                 input_size=128,
+                 output_size=128,
+                 num_layers=2,
+                 dropout=0.5):
         super(GCNNet, self).__init__()
         if num_embs is None:
             print("Must pass in the number of embeddings")
             exit()
-        self.embed = nn.Embedding(num_embs, emb_size)
+        self.embed = nn.Embedding(num_embs, input_size)
 
-        self.in_layer = GCNConv(emb_size, hidden_size)
+        self.in_layer = GCNConv(input_size, hidden_size)
         self.hidden_layers = nn.ModuleList([GCNConv(hidden_size, hidden_size) for _ in range(num_layers - 2)])
-        self.out_layer = GCNConv(hidden_size, out_size)
+        self.out_layer = GCNConv(hidden_size, output_size)
 
         self.num_layers = num_layers
         self.aggr = aggr
@@ -22,7 +29,14 @@ class GCNNet(torch.nn.Module):
         self.dp = nn.Dropout(p=dropout)
 
     def forward(self, data):
+        if isinstance(data, list):
+            data = data[0]
+
         edge_index, x_ids = data.edge_index, data.node_ids
+        # print(f"edge index: {edge_index.get_device()}")
+        # print(f"x ids: {x_ids.get_device()}")
+        # print(f"model embed: {self.embed.weight.get_device()}")
+
         x = self.embed(x_ids)
         x = self.in_layer(x, edge_index)
         x = self.relu(x)
@@ -35,7 +49,10 @@ class GCNNet(torch.nn.Module):
 
         if self.aggr == 'mean':
             x = scatter_mean(x, data.batch, dim=0)
-        # TODO: Implement sum and max pool
+        if self.aggr == 'max':
+            x, _ = scatter_max(x, data.batch, dim=0)
+        if self.aggr == 'sum':
+            x = scatter_add(x, data.batch, dim=0)
 
         return x
 

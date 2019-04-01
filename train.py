@@ -1,188 +1,242 @@
 import pickle
-import sys
-sys.path.append("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/")
+from os.path import join
 
-from fairseq.gnn.utils import batchify
-from fairseq.gnn.models.gcnnet import GCNNet
-from fairseq.gnn.models.ginnet import GINNet
+from gnn.utils import get_logger
+from gnn.models.bilstm import BILSTM
+from gnn.models.gcnnet import GCNNet
+from gnn.models.ginnet import GINNet
+
+from gnn.data.plain_sent import PlainSentDataset
+from gnn.data.dictionary import Dictionary
+from gnn.data.graph_sent import GraphSentDataset
+
+from gnn.trainer import Trainer
+from gnn.validate import Validator
 
 import torch
-import torch.nn.functional as F
-from torch_geometric.data import Data
-from torch_geometric.data import Batch
+import torch.nn as nn
 
-import numpy as np
-
-import logging
 import argparse
 import gc
 import os
 import random
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--num_sents", type=int, default=10 ** 6)
-parser.add_argument("--batch_size", type=int, default=64)
-parser.add_argument("--num_epochs", type=int, default=10)
-parser.add_argument("--random_seed", type=int, default=42)
-parser.add_argument("--exp_name", type=str, default=str(random.randint(0, 10**8)))
-parser.add_argument("--dp", type=float, default=0.3)
-parser.add_argument("--lr", type=float, default=0.01)
-parser.add_argument("--wd", type=float, default=1e-05)
-parser.add_argument("--train_prop", type=float, default=0.95)
-parser.add_argument("--num_layers", type=int, default=2)
-parser.add_argument("--grid_search", action='store_true', default=False)
-parser.add_argument("--verbose", action='store_true', default=False)
-parser.add_argument("--model_type", type=str, choices=['gcn', 'gin'], default=False)
-
-args = parser.parse_args()
-log_f_name = f"/tmp-network/user/rgupta/logs/semantic_similarity-{args.exp_name}.log"
-if os.path.exists(log_f_name):
-    os.remove(log_f_name)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s|%(message)s",
-    handlers=[
-        logging.FileHandler(log_f_name),
-        logging.StreamHandler(sys.stdout)
-    ])
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-logger = logging.getLogger()
-
-str2model = {'gcn': GCNNet,
-             'gin': GINNet}
-
-logger.log(20, "Loading dataset")
-with open("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/data/local/semantic_similarity.pickle", "rb") as f:
-    dataset = pickle.load(f)
-
-logger.log(20, "Dataset loaded")
-
-logger.log(20, "Loading vocab from disk")
-with open("/nfs/team/nlp/users/rgupta/NMT/code/fairseq/data/local/semantic_similarity_vocab.pickle", "rb") as f:
-    vocab = pickle.load(f)
-logger.log(20, "Vocab loaded")
-
-np.random.seed = 42
-permute = np.random.permutation(len(dataset)).tolist()
-
-train = []
-dev = []
-train_size = int(args.train_prop * len(dataset))
-dev_size = len(dataset) - train_size
-
-for i in permute:
-    if len(train) < train_size:
-        train.append(dataset[i])
-    else:
-        dev.append(dataset[i])
-train = train[:args.num_sents]
-logger.log(20, f"Num Epochs: {args.num_epochs}, Len dataset: {len(dataset)}, Len train: {len(train)}, Len dev: {len(dev)}, Num Iters: {len(train) // args.batch_size}")
-
-train_data_en = [Data.from_dict({'edge_index': g['edge_index_en'], 'node_ids': g['x_ids_en']}) for g in train]
-train_data_de = [Data.from_dict({'edge_index': g['edge_index_de'], 'node_ids': g['x_ids_de']}) for g in train]
-train_y = [g['y'] for g in train]
-
-dev_data_en = [Data.from_dict({'edge_index': g['edge_index_en'], 'node_ids': g['x_ids_en']}) for g in dev]
-dev_data_de = [Data.from_dict({'edge_index': g['edge_index_de'], 'node_ids': g['x_ids_de']}) for g in dev]
-dev_y = [g['y'] for g in dev]
-
-
-def validate(model, batch_size=32):
-    model.eval()
-    accs = []
-
-    for i, (batch_en, batch_de, y_dev) in enumerate(zip(batchify(dev_data_en, batch_size),
-                                                    batchify(dev_data_de, batch_size),
-                                                    batchify(dev_y, batch_size))):
-        batch_en = Batch.from_data_list(batch_en).to(device)
-        batch_de = Batch.from_data_list(batch_de).to(device)
-        y_dev = torch.tensor(y_dev).to(device)
-
-        out_en = model(batch_en)
-        out_de = model(batch_de)
-
-        scores = torch.sigmoid((out_en * out_de).sum(dim=1))
-        preds = scores > 0.5
-        if args.verbose and i % 100 == 0:
-            logger.log(20, f"VALIDATION - i: {i}, Mean: {torch.mean(scores)}, STD: {torch.std(scores)}")
-
-        accs.append(torch.eq(preds, y_dev.byte()).sum().item() / batch_size)
-
-    if args.verbose:
-        print(f"Y    Dev: {y_dev[:50]}")
-        print(f"pred Dev: {preds[:50]}")
-
-    return np.average(accs)
-
-
-def train(**kwargs):
-
-    lr = kwargs['lr']
-    wd = kwargs['wd']
-    num_layers = kwargs['num_layers']
-    dp = kwargs['dp']
-    param2perf = kwargs['param2perf']
-
-    key = f"LR: {lr}, WD: {wd}, NUM_LAYERS: {num_layers}, DP: {dp}"
-    logger.log(20, key)
-    if param2perf is not None:
-        param2perf[key] = []
-    model = str2model[args.model_type](num_embs=len(vocab), num_layers=num_layers, dropout=dp).to(device)
-    logger.info(f"Model: {model}")
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-
-    for epoch in range(args.num_epochs):
-
-        model.train()
-        for i, (batch_en, batch_de, y_train) in enumerate(zip(batchify(train_data_en, args.batch_size),
-                                                        batchify(train_data_de, args.batch_size),
-                                                        batchify(train_y, args.batch_size))):
-            batch_en = Batch.from_data_list(batch_en).to(device)
-            batch_de = Batch.from_data_list(batch_de).to(device)
-            y_train = torch.tensor(y_train, dtype=torch.float).to(device)
-            optimizer.zero_grad()
-            out_en = model(batch_en)
-            out_de = model(batch_de)
-            if args.verbose:
-                print(f"Batch en: {batch_en.batch.shape}, batch de : {batch_de.batch.shape}, y: {y_train.shape}")
-                print(f"Out en: {out_en.shape}, Out de : {out_de.shape}")
-            scores = torch.sigmoid((out_en * out_de).sum(dim=1))  # dot product
-
-            if i % 100 == 0:
-                logger.log(20, f"TRAIN - i: {i}, Mean: {torch.mean(scores)}, STD: {torch.std(scores)}")
-
-            loss = F.binary_cross_entropy(scores, y_train.float())
-            loss.backward()
-            optimizer.step()
-        acc = validate(model, batch_size=args.batch_size)
-        if param2perf is not None:
-            param2perf[key].append(acc)
-        logger.log(20, f"Epoch: {epoch}, Accuracy: {acc}")
-
-    del model, optimizer
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    return param2perf
-
-
 try:
-    if args.grid_search:
-            param2perf = {}
-            for dp in [0.3, 0.5, 0.7]:
-                for lr in [0.01, 0.05, 0.001, 0.005]:
-                    for wd in [5e-4, 1e-4, 5e-3, 1e-3, 5e-5, 1e-5]:
-                        for num_layers in [2, 3, 4, 5]:
 
-                            param2perf = train(lr=lr, dp=dp, wd=wd, num_layers=num_layers, param2perf=param2perf)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--random_seed", type=int, default=42)
+    parser.add_argument("--verbose", action='store_true', default=False)
 
-                            logger.log(20, "Saving param2perf disk")
-                            with open(f"/nfs/team/nlp/users/rgupta/NMT/code/fairseq/data/local/param2perf-{args.exp_name}.pickle", "wb") as f:
-                                pickle.dump(param2perf, f)
-                            logger.log(20, "Done")
+    parser.add_argument("--num_sents", type=int, default=-1)
+    parser.add_argument("--dataset", type=str, default="iwslt14")
+    parser.add_argument("--src_lang", type=str, default="en")
+    parser.add_argument("--tgt_lang", type=str, default="de")
+    parser.add_argument("--exp_name", type=str, default=str(random.randint(0, 10**8)))
+    parser.add_argument("--neg_sample", type=int, default=1)
+    parser.add_argument("--grid_search", action='store_true', default=False)
+    parser.add_argument("--model_type", type=str, choices=['graph', 'plain'], default='graph')
+    parser.add_argument("--data_dir", type=str, default="data")
+    parser.add_argument("--log_dir", type=str, default="logs")
+    parser.add_argument("--side_vocabs", type=str, help="comma separated list of side vocabs to use for representation")
+    parser.add_argument("--main_vocab", type=str, help="if using graph model type, then vocab name of main chain", default=10000)
+    parser.add_argument("--word_vocab_size", type=int, help="if vocab option is words, then choose size of vocab", default=-1)
+
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument("--dp", type=float, default=0.3)
+    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--wd", type=float, default=1e-05)
+    parser.add_argument("--optimizer", type=str, choices=['adam'], default='adam')
+
+    parser.add_argument("--model", type=str, choices=['bilstm', 'gcn', 'gin'], default='gcn')
+    parser.add_argument("--aggr", type=str, choices=['mean', 'max', 'sum'], default='mean')
+    parser.add_argument("--input_size", type=int, default=256)
+    parser.add_argument("--hidden_size", type=int, default=256)
+    parser.add_argument("--output_size", type=int, default=256)
+    parser.add_argument("--num_layers", type=int, default=2)
+
+    args = parser.parse_args()
+    assert args.data_dir is not None
+    assert args.log_dir is not None
+    assert args.main_vocab is not None
+    if args.model_type == "graph":
+        assert args.model != "bilstm", "If model type is graph, then model should be graph based and not bilstm"
+    if args.model_type == "plain":
+        assert args.model == "bilstm", "If model type is graph, then model should be bilsmt  and not graph based"
+        assert args.side_vocabs is None
+
+    all_vocabs = [args.main_vocab]
+    if args.side_vocabs is not None:
+        all_vocabs += args.side_vocabs.split(",")
+
+    log_f_name = join(args.log_dir, f"{args.exp_name}.log")
+    if os.path.exists(log_f_name):
+        os.remove(log_f_name)
+    logger = get_logger(log_f_name)
+    logger.info("Experiment Parameters")
+    for arg in sorted(vars(args)):
+        logger.info('{:<15}\t{}'.format(arg, getattr(args, arg)))
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    MODEL_REGISTRY = {'bilstm': BILSTM,
+                      'gcn': GCNNet,
+                      'gin': GINNet
+                      }
+
+    if args.model_type == 'plain':
+        src_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.src_lang}'))
+        src_dict.finalize(nwords=args.word_vocab_size)
+        tgt_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.tgt_lang}'))
+        tgt_dict.finalize(nwords=args.word_vocab_size)
     else:
-        key = f"LR: {args.lr}, WD: {args.wd}, NUM_LAYERS: {args.num_layers}, DP: {args.dp}, EPOCHS: {args.num_epochs}"
-        train(lr=args.lr, dp=args.dp, wd=args.wd, num_layers=args.num_layers, param2perf=None)
+        src_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"vocabs/iwslt14/{vocab}.{args.src_lang}"), prefix=vocab) for vocab in all_vocabs}
+        tgt_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"vocabs/iwslt14/{vocab}.{args.tgt_lang}"), prefix=vocab) for vocab in all_vocabs}
+
+        vocab2lens = {vocab: args.word_vocab_size if 'words' in str(vocab) else -1 for vocab in all_vocabs}
+        src_dict = Dictionary.merge_dictionaries([(src_vocab2dict[v], vocab2lens[v]) for v in all_vocabs])
+        tgt_dict = Dictionary.merge_dictionaries([(tgt_vocab2dict[v], vocab2lens[v]) for v in all_vocabs])
+
+    logger.info(f"Dictionaries loaded, len src: {len(src_dict)}, len tgt: {len(tgt_dict)}")
+    combined_dictionary = Dictionary.merge_dictionaries([(src_dict, -1), (tgt_dict, -1)])
+    logger.info(f"Created combined dictionary, len combined: {len(combined_dictionary)}")
+    del src_dict, tgt_dict
+
+    splits = ['train', 'dev', 'test']
+    datasets = {}
+    loaders = {}
+    for split in splits:
+        if args.model_type == 'plain':
+            src_train_f = join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/{split}.{args.src_lang}')
+            tgt_train_f = join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/{split}.{args.tgt_lang}')
+
+            dataset = PlainSentDataset(src_data_fname=src_train_f,
+                                       tgt_data_fname=tgt_train_f,
+                                       dictionary=combined_dictionary,
+                                       logger=logger,
+                                       num_sents=args.num_sents,
+                                       neg_sample=args.neg_sample)
+        else:
+            src_vocab2data_fname = {vocab: join(args.data_dir, f"corpora/{args.dataset}/{vocab}/{split}.{args.src_lang}") for vocab in all_vocabs}
+            tgt_vocab2data_fname = {vocab: join(args.data_dir, f"corpora/{args.dataset}/{vocab}/{split}.{args.tgt_lang}") for vocab in all_vocabs}
+
+            dataset = GraphSentDataset(src_head_vocab=args.main_vocab,
+                                       src_vocab2data_fname=src_vocab2data_fname,
+                                       tgt_head_vocab=args.main_vocab,
+                                       tgt_vocab2data_fname=tgt_vocab2data_fname,
+                                       dictionary=combined_dictionary,
+                                       verbose=args.verbose,
+                                       logger=logger,
+                                       num_sents=args.num_sents)
+
+        loader = dataset.get_loader(batch_size=args.batch_size)
+
+        datasets[split] = dataset
+        loaders[split] = loader
+
+    len_train = len(datasets['train'])
+    len_dev = len(datasets['dev'])
+    logger.info(
+        f"Num Epochs: {args.num_epochs}, Len train: {len_train}, Len dev: {len_dev}, Num Iters: {len_train // args.batch_size}")
+
+    validator = Validator(loaders['dev'], device)
+    logger.info("Created validator.")
+
+    def get_model(input_size=args.input_size,
+                  hidden_size=args.hidden_size,
+                  num_embs=len(combined_dictionary),
+                  num_layers=args.num_layers,
+                  dropout=args.dp,
+                  output_size=args.output_size,
+                  aggr=args.aggr):
+        model = MODEL_REGISTRY[args.model]
+        logger.info(f"Model: {model}")
+        model = model(input_size=input_size,
+                      hidden_size=hidden_size,
+                      output_size=output_size,
+                      num_embs=num_embs,
+                      num_layers=num_layers,
+                      dropout=dropout,
+                      aggr=aggr)
+
+        if torch.cuda.device_count() > 1:
+            logger.info(f"Using {torch.cuda.device_count()} GPUs.")
+            model = nn.DataParallel(model)
+        model = model.to(device)
+
+        return model
+
+    def get_trainer(lr=args.lr,
+                    param2perf=None,
+                    wd=args.wd,
+                    num_layers=args.num_layers,
+                    dp=args.dp,
+                    logger=logger,
+                    model=None,
+                    device=device,
+                    loader=loaders['train'],
+                    args=args,
+                    validator=validator,
+                    optimizer=args.optimizer,
+                    dictionary=combined_dictionary,
+                    ):
+
+        assert model is not None
+        return Trainer(lr=lr,
+                       param2perf=param2perf,
+                       wd=wd,
+                       num_layers=num_layers,
+                       dp=dp,
+                       logger=logger,
+                       model=model,
+                       device=device,
+                       loader=loader,
+                       args=args,
+                       validator=validator,
+                       optimizer=optimizer,
+                       dictionary=dictionary,)
+
+    if args.grid_search:
+        exp_params = {"word_vocab_size": args.word_vocab_size,
+                      "main_vocab": args.main_vocab,
+                      "side_vocabs": args.side_vocabs,
+                      "model": args.model}
+        param2perf = []
+        for dp in [0.3, 0.5]:
+            for wd in [5e-5, 1e-5, 5e-4, 1e-4]:
+                for lr in [0.001, 0.005]:
+                    model = get_model(dropout=dp)
+                    trainer = get_trainer(lr=lr,
+                                          param2perf=param2perf,
+                                          wd=wd,
+                                          dp=dp,
+                                          model=model)
+                    try:
+                        model, optimzer, param2perf = trainer.train()
+                    except OverflowError:
+                        logger.error("Overflow error, continuing with next settings")
+                        continue
+
+                    del model, optimzer
+                    gc.collect()
+
+                    logger.info("Saving param2perf 2 disk")
+
+                    print(f"Param2perf len: {len(param2perf)}")
+                    param2perf = [{**exp_params, **record} for record in param2perf]
+                    for record in param2perf:
+                        print(record)
+                    with open(join(args.data_dir, f"grid_search/{args.exp_name}.pkl"), "wb") as f:
+                        pickle.dump(param2perf, f)
+                    logger.info("Done")
+
+    else:
+        logger.info(f"LR: {args.lr}, WD: {args.wd}, NUM_LAYERS: {args.num_layers}, DP: {args.dp}, EPOCHS: {args.num_epochs}")
+        model = get_model()
+        trainer = get_trainer(model=model)
+
+        logger.info("Created training")
+        logger.info("Launching training...")
+        trainer.train()
+
 except Exception as e:
-    logger.log(40, "Error", exc_info=1)
+    logger.error("Error", exc_info=1)
