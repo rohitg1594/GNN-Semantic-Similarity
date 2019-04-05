@@ -1,2 +1,8 @@
 **/logs
 data/
+local/
+.idea/
+nbooks/.ipynb_checkpoints/
+*__pycache__*
+*.out
+
