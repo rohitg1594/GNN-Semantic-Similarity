@@ -11,7 +11,7 @@ from gnn.data.dictionary import Dictionary
 from gnn.data.graph_sent import GraphSentDataset
 
 from gnn.trainer import Trainer
-from gnn.validate import Validator
+from gnn.validate import ClassificationValidator, RankingValidator
 
 import torch
 import torch.nn as nn
@@ -25,15 +25,19 @@ try:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--random_seed", type=int, default=42)
-    parser.add_argument("--verbose", action='store_true', default=False)
+    parser.add_argument("--verbose", type=int, default=0)
+
+    parser.add_argument("--task", type=str, choices=['ranking', 'classification'], default='classification')
+    parser.add_argument("--measure", type=str, choices=['l2', 'ip'], default='ip', help='if ranking task, distance measure for retrieval')
 
     parser.add_argument("--num_sents", type=int, default=-1)
     parser.add_argument("--dataset", type=str, default="iwslt14")
     parser.add_argument("--src_lang", type=str, default="en")
     parser.add_argument("--tgt_lang", type=str, default="de")
-    parser.add_argument("--exp_name", type=str, default=str(random.randint(0, 10**8)))
+    parser.add_argument("--save_graphs", action='store_true')
+    parser.add_argument("--exp_name", type=str, default="random/" + str(random.randint(0, 10**8)))
     parser.add_argument("--neg_sample", type=int, default=1)
-    parser.add_argument("--grid_search", action='store_true', default=False)
+    parser.add_argument("--grid_search", action='store_true')
     parser.add_argument("--model_type", type=str, choices=['graph', 'plain'], default='graph')
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--log_dir", type=str, default="logs")
@@ -78,15 +82,16 @@ try:
         logger.info('{:<15}\t{}'.format(arg, getattr(args, arg)))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Device: {device}")
     MODEL_REGISTRY = {'bilstm': BILSTM,
                       'gcn': GCNNet,
                       'gin': GINNet
                       }
 
     if args.model_type == 'plain':
-        src_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.src_lang}'))
+        src_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.src_lang}'), prefix="")
         src_dict.finalize(nwords=args.word_vocab_size)
-        tgt_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.tgt_lang}'))
+        tgt_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.tgt_lang}'), prefix="")
         tgt_dict.finalize(nwords=args.word_vocab_size)
     else:
         src_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"vocabs/iwslt14/{vocab}.{args.src_lang}"), prefix=vocab) for vocab in all_vocabs}
@@ -99,12 +104,19 @@ try:
     logger.info(f"Dictionaries loaded, len src: {len(src_dict)}, len tgt: {len(tgt_dict)}")
     combined_dictionary = Dictionary.merge_dictionaries([(src_dict, -1), (tgt_dict, -1)])
     logger.info(f"Created combined dictionary, len combined: {len(combined_dictionary)}")
+    logger.info(f"Dummy sentence: {combined_dictionary.string(combined_dictionary.dummy_sentence(10))}")
     del src_dict, tgt_dict
 
-    splits = ['train', 'dev', 'test']
+    splits = ['train', 'valid']  # , 'test']
     datasets = {}
     loaders = {}
     for split in splits:
+        if args.task == 'ranking' and split == 'valid':
+            logger.info('Setting neg sample to zero')
+            neg_sample = 0
+        else:
+            neg_sample = args.neg_sample
+
         if args.model_type == 'plain':
             src_train_f = join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/{split}.{args.src_lang}')
             tgt_train_f = join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/{split}.{args.tgt_lang}')
@@ -114,19 +126,23 @@ try:
                                        dictionary=combined_dictionary,
                                        logger=logger,
                                        num_sents=args.num_sents,
-                                       neg_sample=args.neg_sample)
+                                       neg_sample=neg_sample,
+                                       prefix="",
+                                       verbose=args.verbose)
         else:
             src_vocab2data_fname = {vocab: join(args.data_dir, f"corpora/{args.dataset}/{vocab}/{split}.{args.src_lang}") for vocab in all_vocabs}
             tgt_vocab2data_fname = {vocab: join(args.data_dir, f"corpora/{args.dataset}/{vocab}/{split}.{args.tgt_lang}") for vocab in all_vocabs}
 
-            dataset = GraphSentDataset(src_head_vocab=args.main_vocab,
+            dataset = GraphSentDataset(src_main_vocab=args.main_vocab,
                                        src_vocab2data_fname=src_vocab2data_fname,
-                                       tgt_head_vocab=args.main_vocab,
+                                       tgt_main_vocab=args.main_vocab,
                                        tgt_vocab2data_fname=tgt_vocab2data_fname,
                                        dictionary=combined_dictionary,
                                        verbose=args.verbose,
                                        logger=logger,
-                                       num_sents=args.num_sents)
+                                       num_sents=args.num_sents,
+                                       args=args,
+                                       neg_sample=neg_sample)
 
         loader = dataset.get_loader(batch_size=args.batch_size)
 
@@ -134,11 +150,14 @@ try:
         loaders[split] = loader
 
     len_train = len(datasets['train'])
-    len_dev = len(datasets['dev'])
+    len_valid = len(datasets['valid'])
     logger.info(
-        f"Num Epochs: {args.num_epochs}, Len train: {len_train}, Len dev: {len_dev}, Num Iters: {len_train // args.batch_size}")
+        f"Num Epochs: {args.num_epochs}, Len train: {len_train}, Len Valid: {len_valid}, Num Iters: {len_train // args.batch_size}")
 
-    validator = Validator(loaders['dev'], device)
+    if args.task == 'classification':
+        validator = ClassificationValidator(loaders['valid'], device)
+    elif args.task == 'ranking':
+        validator = RankingValidator(loaders['valid'], device, measure=args.measure, src_sents=datasets['valid'].src_raw)
     logger.info("Created validator.")
 
     def get_model(input_size=args.input_size,
@@ -203,7 +222,7 @@ try:
         param2perf = []
         for dp in [0.3, 0.5]:
             for wd in [5e-5, 1e-5, 5e-4, 1e-4]:
-                for lr in [0.001, 0.005]:
+                for lr in [0.001, 0.005, 0.01,]:
                     model = get_model(dropout=dp)
                     trainer = get_trainer(lr=lr,
                                           param2perf=param2perf,
