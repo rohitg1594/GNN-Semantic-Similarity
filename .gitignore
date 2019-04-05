@@ -2,6 +2,7 @@
 data/
 local/
 .idea/
+data
 nbooks/.ipynb_checkpoints/
 *__pycache__*
 *.out
