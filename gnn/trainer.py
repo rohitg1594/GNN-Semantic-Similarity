@@ -55,6 +55,7 @@ class Trainer:
                     self.log_verbose2(inp_src, inp_tgt, out_src, out_tgt, y)
 
                 if i % 100 == 0 and self.args.verbose >= 1:
+                    self.logger.info(f"TRAIN - i: {i}")
                     self.log_verbose1(scores, y)
 
                 if not (((scores >= 0.) & (scores <= 1.)).all() and ((y >= 0.) & (y <= 1.)).all()):
@@ -100,7 +101,6 @@ class Trainer:
         exit()
 
     def log_verbose1(self, scores, y):
-        self.logger.info(f"TRAIN - i: {i}")
         self.logger.info(f" SCORES: Mean: {torch.mean(scores)}, STD: {torch.std(scores)} Shape: {scores.shape}")
         self.logger.info(f" LABELS: Mean: {torch.mean(y)}, STD: {torch.std(y)} Shape: {y.shape}")
 

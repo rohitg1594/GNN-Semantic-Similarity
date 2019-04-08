@@ -53,6 +53,13 @@ class GCNNet(torch.nn.Module):
             x, _ = scatter_max(x, data.batch, dim=0)
         if self.aggr == 'sum':
             x = scatter_add(x, data.batch, dim=0)
+        if self.aggr == 'mean-main':
+            torch.set_printoptions(threshold=10**6)
+            # print(f"Batch shape: {data.batch.shape}")
+            # print(f"Main mask shape: {data.main_chain_mask.shape}")
+            # print(f"x: {x.shape}")
+            x = x * data.main_chain_mask.unsqueeze(1).expand_as(x)
+            x = scatter_mean(x, data.batch, dim=0)
 
         return x
 

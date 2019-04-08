@@ -53,7 +53,7 @@ try:
     parser.add_argument("--optimizer", type=str, choices=['adam'], default='adam')
 
     parser.add_argument("--model", type=str, choices=['bilstm', 'gcn', 'gin'], default='gcn')
-    parser.add_argument("--aggr", type=str, choices=['mean', 'max', 'sum'], default='mean')
+    parser.add_argument("--aggr", type=str, choices=['mean', 'mean-main', 'max', 'sum'], default='mean')
     parser.add_argument("--input_size", type=int, default=256)
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--output_size", type=int, default=256)
@@ -89,13 +89,13 @@ try:
                       }
 
     if args.model_type == 'plain':
-        src_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.src_lang}'), prefix="")
+        src_dict = Dictionary.load(join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/dict.{args.src_lang}.txt'), prefix="")
         src_dict.finalize(nwords=args.word_vocab_size)
-        tgt_dict = Dictionary.load(join(args.data_dir, f'vocabs/{args.dataset}/{args.main_vocab}.{args.tgt_lang}'), prefix="")
+        tgt_dict = Dictionary.load(join(args.data_dir, f'corpora/{args.dataset}/{args.main_vocab}/dict.{args.tgt_lang}.txt'), prefix="")
         tgt_dict.finalize(nwords=args.word_vocab_size)
     else:
-        src_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"vocabs/iwslt14/{vocab}.{args.src_lang}"), prefix=vocab) for vocab in all_vocabs}
-        tgt_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"vocabs/iwslt14/{vocab}.{args.tgt_lang}"), prefix=vocab) for vocab in all_vocabs}
+        src_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"corpora/{args.dataset}/{vocab}/dict.{args.src_lang}.txt"), prefix=vocab) for vocab in all_vocabs}
+        tgt_vocab2dict = {vocab: Dictionary.load(join(args.data_dir, f"corpora/{args.dataset}/{vocab}/dict.{args.tgt_lang}.txt"), prefix=vocab) for vocab in all_vocabs}
 
         vocab2lens = {vocab: args.word_vocab_size if 'words' in str(vocab) else -1 for vocab in all_vocabs}
         src_dict = Dictionary.merge_dictionaries([(src_vocab2dict[v], vocab2lens[v]) for v in all_vocabs])

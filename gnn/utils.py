@@ -15,17 +15,21 @@ import torch
 
 def plot_graph(g, f_name):
     fig = plt.figure(figsize=(20, 20))
-    # groups = set(nx.get_node_attributes(g,'is_word').values())
-    # mapping = dict(zip(sorted(groups),count()))
+    print(f"nodes: {[node for node in g.nodes()]}")
+    print(f"nodes: {[node.is_main for node in g.nodes()]}")
+    #groups = set(nx.get_node_attributes(g, 'is_main').values())
+    #mapping = {k: 1 if k else 0 for k in groups}
+    #print(f"mapping:{mapping}, groups: {groups}")
     nodes = g.nodes()
-    # colors = [mapping[g.node[n]['is_word']] for n in nodes]
+    colors = [1 if n.is_main else 0 for n in g.nodes()]
 
     pos = nx.kamada_kawai_layout(g)
     ec = nx.draw_networkx_edges(g, pos, alpha=0.5)
     nc = nx.draw_networkx_nodes(g, pos, nodelist=nodes,
                                 with_labels=True, node_size=200, cmap=plt.cm.Pastel1,
+                                node_color=colors,
                                 font_weight='bold')
-    labels= nx.draw_networkx_labels(g, pos)
+    labels = nx.draw_networkx_labels(g, pos)
     plt.savefig(f_name)
 
 
@@ -48,8 +52,8 @@ def create_graph(main_chain, side_chains, dictionary, main_vocab='words-lower',)
     #        print(f"{pr_token} is not in dictionary")
     # print(f"Main chain ids: {[dictionary.index(token) for token in main_chain]}")
     # exit()
-    main_chain_nodes = [Node(token, dictionary.index(token)) for token in main_chain]
-    side_chain_nodes = [[[Node(token, dictionary.index(token)) for token in head] for head in sent] for vocab, sent in side_chains.items()]
+    main_chain_nodes = [Node(token, dictionary.index(token), 1) for token in main_chain]
+    side_chain_nodes = [[[Node(token, dictionary.index(token), 0) for token in head] for head in sent] for vocab, sent in side_chains.items()]
     # print(f"Side chain nodes: {side_chain_nodes}")
     # print(f"Main chain nodes: {main_chain_nodes}")
 
