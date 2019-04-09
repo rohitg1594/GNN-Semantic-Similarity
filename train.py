@@ -5,6 +5,7 @@ from gnn.utils import get_logger
 from gnn.models.bilstm import BILSTM
 from gnn.models.gcnnet import GCNNet
 from gnn.models.ginnet import GINNet
+from gnn.models.gated_conv import GatedConv
 
 from gnn.data.plain_sent import PlainSentDataset
 from gnn.data.dictionary import Dictionary
@@ -48,12 +49,12 @@ try:
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--dp", type=float, default=0.3)
-    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--wd", type=float, default=1e-05)
     parser.add_argument("--optimizer", type=str, choices=['adam'], default='adam')
 
-    parser.add_argument("--model", type=str, choices=['bilstm', 'gcn', 'gin'], default='gcn')
-    parser.add_argument("--aggr", type=str, choices=['mean', 'mean-main', 'max', 'sum'], default='mean')
+    parser.add_argument("--model", type=str, choices=['bilstm', 'gcn', 'gin', 'gated_conv'], default='gcn')
+    parser.add_argument("--aggr", type=str, choices=['mean', 'mean-main', 'max', 'sum', 'global-attn'], default='mean')
     parser.add_argument("--input_size", type=int, default=256)
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--output_size", type=int, default=256)
@@ -85,7 +86,8 @@ try:
     logger.info(f"Device: {device}")
     MODEL_REGISTRY = {'bilstm': BILSTM,
                       'gcn': GCNNet,
-                      'gin': GINNet
+                      'gin': GINNet,
+                      'gated_conv': GatedConv,
                       }
 
     if args.model_type == 'plain':
@@ -175,7 +177,8 @@ try:
                       num_embs=num_embs,
                       num_layers=num_layers,
                       dropout=dropout,
-                      aggr=aggr)
+                      aggr=aggr,
+                      args=args)
 
         if torch.cuda.device_count() > 1:
             logger.info(f"Using {torch.cuda.device_count()} GPUs.")

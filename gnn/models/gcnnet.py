@@ -1,7 +1,7 @@
+from gnn.models.global_aggr import GlobalAggregator
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GCNConv
-from torch_scatter import scatter_mean, scatter_max, scatter_add
 
 
 class GCNNet(torch.nn.Module):
@@ -12,7 +12,8 @@ class GCNNet(torch.nn.Module):
                  input_size=128,
                  output_size=128,
                  num_layers=2,
-                 dropout=0.5):
+                 dropout=0.5,
+                 args=None):
         super(GCNNet, self).__init__()
         if num_embs is None:
             print("Must pass in the number of embeddings")
@@ -24,18 +25,15 @@ class GCNNet(torch.nn.Module):
         self.out_layer = GCNConv(hidden_size, output_size)
 
         self.num_layers = num_layers
-        self.aggr = aggr
         self.relu = nn.ReLU()
         self.dp = nn.Dropout(p=dropout)
+        self.global_aggr = GlobalAggregator(args)
 
     def forward(self, data):
         if isinstance(data, list):
             data = data[0]
 
         edge_index, x_ids = data.edge_index, data.node_ids
-        # print(f"edge index: {edge_index.get_device()}")
-        # print(f"x ids: {x_ids.get_device()}")
-        # print(f"model embed: {self.embed.weight.get_device()}")
 
         x = self.embed(x_ids)
         x = self.in_layer(x, edge_index)
@@ -47,19 +45,7 @@ class GCNNet(torch.nn.Module):
             x = self.dp(x)
         x = self.out_layer(x, edge_index)
 
-        if self.aggr == 'mean':
-            x = scatter_mean(x, data.batch, dim=0)
-        if self.aggr == 'max':
-            x, _ = scatter_max(x, data.batch, dim=0)
-        if self.aggr == 'sum':
-            x = scatter_add(x, data.batch, dim=0)
-        if self.aggr == 'mean-main':
-            torch.set_printoptions(threshold=10**6)
-            # print(f"Batch shape: {data.batch.shape}")
-            # print(f"Main mask shape: {data.main_chain_mask.shape}")
-            # print(f"x: {x.shape}")
-            x = x * data.main_chain_mask.unsqueeze(1).expand_as(x)
-            x = scatter_mean(x, data.batch, dim=0)
+        x = self.global_aggr(x, data)
 
         return x
 
