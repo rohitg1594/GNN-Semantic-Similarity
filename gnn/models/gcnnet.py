@@ -48,14 +48,3 @@ class GCNNet(torch.nn.Module):
         x = self.global_aggr(x, data)
 
         return x
-
-    def __str__(self):
-        return f"In Layer: {self.in_layer}, " + \
-              f"Hiddin Layers: {self.hidden_layers}, " + \
-              f"Out Layer: {self.out_layer}"
-
-
-if __name__ == "__main__":
-
-    for l in range(2, 5):
-        net = GCNNet(num_embs=10, num_layers=l)

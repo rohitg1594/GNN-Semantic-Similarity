@@ -3,7 +3,6 @@ data/
 local/
 .idea/
 data
-gnn/__pycache__/*
-nbooks/.ipynb_checkpoints/
-*__pycache__*
+nbooks/.ipynb_checkpoints/*
 *.out
+*.pyc

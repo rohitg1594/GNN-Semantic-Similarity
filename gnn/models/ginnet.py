@@ -72,9 +72,3 @@ class GINNet(torch.nn.Module):
             score_over_layer = scatter_mean(score_over_layer, data.batch, dim=0)
 
         return score_over_layer
-
-
-if __name__ == "__main__":
-
-    for l in range(2, 5):
-        net = GINNet(num_embs=10, num_layers=l)

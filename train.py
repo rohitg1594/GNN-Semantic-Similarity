@@ -25,12 +25,15 @@ import random
 try:
 
     parser = argparse.ArgumentParser()
+    # Misc.
     parser.add_argument("--random_seed", type=int, default=42)
     parser.add_argument("--verbose", type=int, default=0)
 
+    # Task and eval
     parser.add_argument("--task", type=str, choices=['ranking', 'classification'], default='classification')
     parser.add_argument("--measure", type=str, choices=['l2', 'ip'], default='ip', help='if ranking task, distance measure for retrieval')
 
+    # Dataset
     parser.add_argument("--num_sents", type=int, default=-1)
     parser.add_argument("--dataset", type=str, default="iwslt14")
     parser.add_argument("--src_lang", type=str, default="en")
@@ -45,7 +48,9 @@ try:
     parser.add_argument("--side_vocabs", type=str, help="comma separated list of side vocabs to use for representation")
     parser.add_argument("--main_vocab", type=str, help="if using graph model type, then vocab name of main chain", default=10000)
     parser.add_argument("--word_vocab_size", type=int, help="if vocab option is words, then choose size of vocab", default=-1)
+    parser.add_argument("--add_side_connections", action='store_true', help="if set, then the side chain nodes are also connected to form a sentence")
 
+    # Training
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--dp", type=float, default=0.3)
@@ -53,8 +58,9 @@ try:
     parser.add_argument("--wd", type=float, default=1e-05)
     parser.add_argument("--optimizer", type=str, choices=['adam'], default='adam')
 
+    # Architecture
     parser.add_argument("--model", type=str, choices=['bilstm', 'gcn', 'gin', 'gated_conv'], default='gcn')
-    parser.add_argument("--aggr", type=str, choices=['mean', 'mean-main', 'max', 'sum', 'global-attn'], default='mean')
+    parser.add_argument("--aggr", type=str, choices=['mean', 'mean-main', 'mean-side', 'max', 'sum', 'global-attn'], default='mean')
     parser.add_argument("--input_size", type=int, default=256)
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--output_size", type=int, default=256)
@@ -69,6 +75,8 @@ try:
     if args.model_type == "plain":
         assert args.model == "bilstm", "If model type is graph, then model should be bilsmt  and not graph based"
         assert args.side_vocabs is None
+    if args.side_vocabs is not None:
+        assert args.main_vocab in ['words-lower', 'words-mix']
 
     all_vocabs = [args.main_vocab]
     if args.side_vocabs is not None:

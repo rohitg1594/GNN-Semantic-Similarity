@@ -33,12 +33,13 @@ def plot_graph(g, f_name):
     plt.savefig(f_name)
 
 
-def create_graph(main_chain, side_chains, dictionary, main_vocab='words-lower',):
+def create_graph(main_chain, side_chains, dictionary, add_side_connections=False):
     """
     Create graph represenation of graph.
     Head chain: List of tokens in main.
     Side chains: Dictionary with key = vocab size and value = list of sentences tokenized with that vocab size.
     vocab_dict: Common vocab dictionary of all nodes in graph.
+    add_side_connections: if set, then the side chain nodes are also connected to form a sentence
     """
     g = nx.Graph()
     # print(f"Symbols: {dictionary.symbols[:100]}")
@@ -64,12 +65,15 @@ def create_graph(main_chain, side_chains, dictionary, main_vocab='words-lower',)
 
     for i, nodes in enumerate(side_chain_nodes):
         for j, head in enumerate(nodes):
+
             for k, bpe_node in enumerate(head):
                 g.add_node(bpe_node, label=bpe_node.name, is_word=False)
                 g.add_edge(bpe_node, main_chain_nodes[j])
                 if k > 0:
-                    g.add_edge(side_chain_nodes[i][j][k], side_chain_nodes[i][j][k - 1])
+                    g.add_edge(side_chain_nodes[i][j][k - 1], side_chain_nodes[i][j][k])
 
+            if add_side_connections and j > 0:
+                g.add_edge(side_chain_nodes[i][j - 1][-1], side_chain_nodes[i][j][0])
     return g
 
 
